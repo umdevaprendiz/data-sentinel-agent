@@ -1,1 +1,18 @@
+# Especificação do projeto (fica fora do Git)
+CLAUDE.md
 data-sentinel-CLAUDE.md
+
+# Ambiente e segredos
+.venv/
+.env
+
+# Saídas geradas
+data/
+logs/
+
+# Caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
