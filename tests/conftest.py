@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from sentinel.data.generator import generate_events, load_scenarios
+from sentinel.config import Settings
+from sentinel.data.db import connect_readonly
+from sentinel.data.generator import generate_events, load_scenarios, write_database
+from sentinel.investigation.cube import Cube
+from sentinel.investigation.tools import ToolContext
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIOS_FILE = ROOT / "scenarios" / "scenarios.jsonl"
@@ -34,3 +38,35 @@ def events_of(scenarios, seed):
         return cache[key]
 
     return get
+
+
+@pytest.fixture(scope="session")
+def cube_of(events_of):
+    """Cubo em memória dos eventos de um cenário (cacheado)."""
+    cache = {}
+
+    def get(scenario_id: str) -> Cube:
+        if scenario_id not in cache:
+            cache[scenario_id] = Cube.from_frame(events_of(scenario_id))
+        return cache[scenario_id]
+
+    return get
+
+
+@pytest.fixture(scope="session")
+def ctx_of(scenarios, seed, tmp_path_factory):
+    """`ToolContext` novo, sobre um banco somente leitura do cenário (o banco é cacheado)."""
+    folder = tmp_path_factory.mktemp("dbs")
+    connections = []
+
+    def get(scenario_id: str) -> ToolContext:
+        path = folder / f"{scenario_id}.db"
+        if not path.exists():
+            write_database(scenarios[scenario_id], seed, path)
+        con = connect_readonly(path)
+        connections.append(con)
+        return ToolContext(con, Settings(_env_file=None))
+
+    yield get
+    for con in connections:
+        con.close()

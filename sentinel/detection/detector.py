@@ -2,9 +2,11 @@
 
 Para cada métrica diária:
 - esperado = mediana dos mesmos dias da semana nas `baseline_weeks` semanas anteriores;
-- escala = MAD dos resíduos relativos históricos × 1,4826 (só dias anteriores à janela);
-- z = (resíduo relativo − centro do histórico) / escala;
-- anomalia = `min_consecutive_days` dias seguidos, do mesmo sinal, com |z| >= `z_threshold`.
+- resíduo relativo = observado / esperado − 1;
+- escala = desvio-padrão robusto dos resíduos históricos (só dias anteriores à janela);
+- z = resíduo relativo / escala;
+- anomalia = `min_consecutive_days` dias seguidos, do mesmo sinal, com |z| >= `z_threshold`,
+  ou um deslocamento sustentado na janela inteira.
 """
 
 import sqlite3
@@ -91,7 +93,7 @@ def expected_series(values: pd.Series, weeks: int) -> pd.Series:
     return lags.median(axis=1, skipna=False)
 
 
-def _robust_scale(history: np.ndarray) -> float:
+def robust_scale(history: np.ndarray) -> float:
     """MAD × 1,4826, refinado: desvio-padrão dos resíduos limitados a ±3 escalas MAD.
 
     Só com o MAD, a escala estimada em ~28 dias oscila muito (eficiência de ~37%) e cria
@@ -168,7 +170,7 @@ def _detect_metric(
     history = history[~np.isnan(history)]
     if len(history) < MIN_HISTORY_DAYS:
         return None
-    z = relative / _robust_scale(history)
+    z = relative / robust_scale(history)
 
     window_z = np.nan_to_num(z[window_start : end_pos + 1])
     flags = np.abs(window_z) >= params.z_threshold

@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     window_days: int = 7
     min_slice_sessions: int = 200
 
+    # Drill-down (seção 9.2)
+    ep_single: float = 0.6
+    ep_pair: float = 0.8
+    ep_multi_each: float = 0.3
+    ep_multi_total: float = 0.8
+    z_stable: float = 3.5
+    ep_material: float = 0.1
+    refine_keep: float = 0.9
+    min_total_z: float = 3.5
+
     # Investigação
     max_rounds: int = 5
     time_budget_s: float = 600

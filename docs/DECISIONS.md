@@ -53,3 +53,31 @@ Cada decisão relevante entra aqui: contexto, decisão, motivo e alternativas de
 - **Decisão:** `avg_ticket = revenue / conversions` entra como quinta métrica. A raiz é a primeira que disparou na ordem `sessions → conversion_rate → avg_ticket → conversions → revenue` (a árvore `revenue = sessions × taxa × ticket`).
 - **Motivo:** mudança de preço (s10, s11) mexe no ticket antes de mexer na receita; sem `avg_ticket` o alarme viria só de `revenue`, uma métrica derivada.
 - **Consequência:** o drill-down da etapa 3 precisa tratar `avg_ticket` como razão (receita por conversão), como já trata `conversion_rate`.
+
+## 9. Drill-down: efeito de mistura nas razões
+
+- **Contexto:** o impacto de uma fatia na taxa de conversão só pelo efeito da taxa, `(taxa_obs − taxa_esp) × w_obs`, ignora a mistura. Quando um canal perde sessões (s08, s09), a taxa total muda sem que a taxa de nenhuma fatia mude, e o drill-down não atribuiria nada.
+- **Decisão:** `impacto = efeito_taxa + efeito_mistura`, com `efeito_mistura = (w_obs − w_esp) × (taxa_esp_fatia − taxa_esp_total)`. A soma dos impactos das fatias é exatamente a variação da razão (propriedade testada para as 5 métricas). Vale também para `avg_ticket` (receita por conversão).
+- **Alternativa descartada:** mistura sem subtrair a taxa total. Soma igual, mas atribui impacto a uma fatia só por ganhar peso, mesmo que a taxa dela seja a média.
+
+## 10. Drill-down: o z de uma fatia é o z da média da janela
+
+- **Contexto:** a especificação dizia "fatia estável se `|z| < 2`". Com o z diário médio, uma janela de 2 dias tem desvio de 0,7 e uma de 7 dias tem 0,38; o mesmo limiar significava coisas diferentes. Num caso (s04, semente 1013) uma fatia com `z = −2,05` por puro ruído derrubou a causa certa e o fallback de duas causas inventou uma segunda.
+- **Decisão:** `z = média dos z diários × √dias`, que é ≈ N(0, 1) em qualquer janela. `Z_STABLE = 3,5`. Medido em dados só com ruído (s15, 30 sementes × 5 dimensões): desvio-padrão do z entre 0,83 e 1,06; nenhuma fatia acima de 3,5 em janelas de 3 dias (uma de `avg_ticket` ficou em 3,9 e outra em 4,2 em janelas de 3 e 7 dias).
+
+## 11. Drill-down: guardas contra causa inventada
+
+- **Variação total insignificante:** com `|z| < MIN_TOTAL_Z` (3,5) a lista de causas é vazia. O EP divide por uma variação que é só ruído, então qualquer fatia parecia uma causa (em s15–s18, 100% das execuções).
+- **Segunda causa:** só se procura quando o que sobra, depois de tirar a primeira, ainda tem variação significativa.
+- **Materialidade (`EP_MATERIAL = 0,1`):** uma fatia irmã só desqualifica a hipótese se for instável **e** explicar pelo menos 10% da variação. Sem isso, um desvio significativo mas minúsculo numa fatia irmã (z de −4,8, EP de 0,09 em s11, semente 1036) derrubava a causa certa e abria caminho para uma segunda causa falsa.
+- **Resultado (sementes 1000–1039, 20 cenários, métrica-raiz do detector):** causa certa ou, nos cenários sem causa localizável, lista vazia em 799 de 800 execuções. A exceção é uma deriva (s20) que o detector não detectou, e nesse caso o drill-down corretamente não afirma nada.
+
+## 12. Menu: parâmetros e erros
+
+- **Decisão:** a janela é `window_start`/`window_end`, e a baseline é `baseline_weeks` (a especificação tinha `window` e `baseline` genéricos). Pedido inválido (métrica desconhecida, janela fora dos dados, campo extra) vira um `Finding` com a chave `error`; o agente continua.
+- **`check_recent_changes`:** uma mudança só conta para um `scope` se o escopo dela for global ou tiver dimensão em comum com o mesmo valor. Antes, o deploy do Sul aparecia como evidência para a hipótese `product = phone`.
+- **Adiados para a etapa 6:** `run_sql` e `find_similar_incidents`.
+
+## 13. Plano determinístico
+
+- **Decisão:** `investigation/plan.py` roda `compare_periods`, `decompose_metric`, a busca de causas e, para cada causa, `test_hypothesis` e `check_recent_changes`. Cada passo vira `Finding`, e `Hypothesis.finding_ids` aponta para as provas. É a linha de base da ablação com o modo `llm`.
