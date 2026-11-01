@@ -137,6 +137,7 @@ Cada decisão relevante entra aqui: contexto, decisão, motivo e alternativas de
 - **Embeddings:** `nomic-embed-text` pelo Ollama local (768 dimensões). Nada sai da máquina. Nos testes, `FakeEmbedder`.
 - **Segurança:** valores sempre como parâmetro SQL; só o nome do schema (validado por regex) e a dimensão (inteiro) entram na DDL, via `psycopg.sql`. Erro do Postgres vira `MemoryStoreError` com a família da exceção, sem DSN e sem o texto do banco. Resumo do incidente passa por `redact` e `clean_text` antes de gravar. A indexação recusa `.env*`, extensões fora de `.md`/`.txt`, arquivos grandes e trechos com segredo; a fonte guardada é caminho relativo. A senha do DSN é registrada para redação ao conectar.
 - **Genérico:** o `Incident` valida só o formato do nome da métrica e das dimensões, não uma lista fixa. A memória não pode impedir que o agente passe a vigiar outras métricas (ver decisão 21).
+- **Instalação do pgvector:** em contêiner Docker com a imagem oficial `pgvector/pgvector`, ligado só a `127.0.0.1` e com senha gerada, em vez de copiar uma DLL de terceiros para dentro do Postgres do sistema (o projeto não publica binários oficiais para Windows). O servidor da máquina não é alterado.
 - **Descartado:** guardar os eventos no Postgres (muda o modelo de leitura e não traz ganho agora); embeddings na nuvem (viola "nada sai da máquina"); `pgvector` sem índice (fica lento com muitos incidentes).
 
 ## 21. Métricas e dimensões descobertas, não fixas (planejado)

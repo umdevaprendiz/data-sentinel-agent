@@ -29,7 +29,7 @@ Níveis de autonomia: **L1** relatório · **L2** propõe uma ação e espera ap
 | 2 | Detector de anomalias com início estimado e métrica-raiz | ✅ |
 | 3 | Menu de ferramentas, drill-down com efeito de mistura, plano determinístico | ✅ |
 | 4 | Verificador, placeholders, narrador de template e analista (testado com um LLM falso) | ✅ |
-| — | Memória de incidentes e busca de contexto com pgvector (RAM ✅, Postgres escrito e aguardando a extensão pgvector no servidor) | ⬜ em verificação |
+| — | Memória de incidentes e busca de contexto com pgvector (RAM e Postgres, mesmos testes de contrato) | ✅ |
 | — | Métricas e dimensões descobertas nos dados em vez de fixas (decisão 21) | ⬜ planejado |
 | 5 | Grafo (LangGraph), memória e log de auditoria | ⬜ |
 | 6 | Investigador conduzido pelo LLM (Ollama) | ⬜ |
@@ -55,6 +55,16 @@ sentinel generate --scenario s01   # gera os dados com a causa injetada
 sentinel detect                    # só o detector
 sentinel investigate               # detector + investigação + relatório de template
 ```
+
+### Memória com pgvector (opcional)
+
+Sem `MEMORY_DSN` a memória fica só em RAM. Para persistir, suba um Postgres com pgvector isolado em contêiner (imagem oficial, só em `127.0.0.1`, senha própria sua; crie os bancos `sentinel` e `sentinel_test`):
+
+```bash
+docker run -d --name sentinel-pg -p 127.0.0.1:5442:5432 -v sentinel-pgdata:/var/lib/postgresql   -e POSTGRES_PASSWORD -e POSTGRES_DB=sentinel -e POSTGRES_USER=sentinel pgvector/pgvector:pg18
+```
+
+Depois ponha `MEMORY_DSN` (e `TEST_MEMORY_DSN`, para `pytest -m pg`) no `.env` e confira com `sentinel memory check`. Indexe a documentação com `sentinel memory index` (precisa do Ollama com `nomic-embed-text`).
 
 ```bash
 pytest                  # testes rápidos, sem modelo e sem banco externo
