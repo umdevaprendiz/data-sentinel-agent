@@ -9,10 +9,17 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from sentinel.config import Settings, get_settings
 from sentinel.investigation.cube import Cube
@@ -84,11 +91,18 @@ class TestHypothesisParams(MetricWindowParams):
     __test__ = False  # nome não é uma classe de teste do pytest
 
     dimensions: dict[Dimension, str] = Field(min_length=1, max_length=2)
+    together_with: dict[Dimension, str] | None = Field(default=None, min_length=1, max_length=2)
 
-    @field_validator("dimensions")
+    @field_validator("dimensions", "together_with")
     @classmethod
-    def _values(cls, value: dict[str, str]) -> dict[str, str]:
-        return _check_dimensions(value)
+    def _values(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return None if value is None else _check_dimensions(value)
+
+    @model_validator(mode="after")
+    def _distinct(self) -> Self:
+        if self.together_with == self.dimensions:
+            raise ValueError("together_with igual a dimensions")
+        return self
 
 
 class ChangesParams(WindowParams):
@@ -232,7 +246,10 @@ def top_contributors(ctx: ToolContext, p: TopContributorsParams) -> dict:
 
 def test_hypothesis(ctx: ToolContext, p: TestHypothesisParams) -> dict:
     window, drill = ctx.window(p), ctx.drill_params(p.baseline_weeks)
-    evaluation = evaluate_hypothesis(ctx.cube, p.metric, window, drill, dict(p.dimensions))
+    together = None if p.together_with is None else dict(p.together_with)
+    evaluation = evaluate_hypothesis(
+        ctx.cube, p.metric, window, drill, dict(p.dimensions), together
+    )
 
     def stats(s) -> dict:
         return {
@@ -242,9 +259,21 @@ def test_hypothesis(ctx: ToolContext, p: TestHypothesisParams) -> dict:
             "z": _num(s.z),
         }
 
+    joint = (
+        {
+            "together_with": together,
+            "members": [
+                {"dimensions": m.dimensions, "explained_share": _num(m.explained_share)}
+                for m in evaluation.members
+            ],
+        }
+        if together is not None
+        else {}
+    )
     return {
         "metric": p.metric,
         "dimensions": dict(p.dimensions),
+        **joint,
         "explained_share": _num(evaluation.explained_share),
         "threshold": evaluation.threshold,
         "others_stable": evaluation.others_stable,
@@ -395,8 +424,8 @@ TOOLS: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             "test_hypothesis",
-            "Mede quanto uma hipótese (dimensões = valores) explica "
-            "e se as outras fatias estão estáveis.",
+            "Mede quanto uma hipótese (dimensões = valores) explica e se as outras fatias estão "
+            "estáveis. Com together_with, testa duas causas independentes de uma vez.",
             TestHypothesisParams,
             test_hypothesis,
         ),

@@ -6,6 +6,8 @@ from typing import Annotated
 
 import typer
 
+from sentinel.agent.analyst import write_report
+from sentinel.agent.render import render_report
 from sentinel.config import get_settings
 from sentinel.data.db import connect_readonly
 from sentinel.data.generator import (
@@ -80,7 +82,7 @@ def investigate(
         typer.Option(formats=["%Y-%m-%d"], help="fim da janela; padrão: último dia"),
     ] = None,
 ) -> None:
-    """Detector + investigação determinística, sem LLM nem Telegram."""
+    """Detector + investigação determinística e relatório de template, sem LLM nem Telegram."""
     settings = get_settings()
     db_path = settings.db_path if db_path is None else db_path
     if not db_path.exists():
@@ -102,23 +104,13 @@ def investigate(
     finally:
         con.close()
 
+    outcome = write_report(None, root, hypotheses, ctx.findings)
     typer.echo(
         f"Anomalia: {root.metric} ({root.direction}), {root.window_start} a {root.window_end}, "
         f"início {root.onset}, z={root.z_score:+.1f}"
     )
-    if not hypotheses:
-        typer.echo("Causa não identificada (inconclusivo).")
-    for number, h in enumerate(hypotheses, start=1):
-        where = ", ".join(f"{k}={v}" for k, v in h.dimensions.items())
-        typer.echo(
-            f"Causa {number}: {where} (explica {h.explained_share:.0%}) evidências {h.finding_ids}"
-        )
-    for finding in ctx.findings:
-        if finding.tool == "check_recent_changes":
-            for change in finding.result["changes"]:
-                typer.echo(
-                    f"  {finding.id}: {change['ts']} {change['type']}: {change['description']}"
-                )
+    typer.echo(render_report(outcome.report, ctx.findings))
+    typer.echo(f"\nEvidências: {', '.join(outcome.report.evidence)}")
 
 
 @app.command()

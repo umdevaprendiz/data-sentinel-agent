@@ -100,6 +100,35 @@ def test_test_hypothesis_accepts_the_cause_and_rejects_the_rest(ctx_of):
     }
 
 
+def test_two_independent_causes_are_accepted_together_but_not_alone(ctx_of):
+    ctx = ctx_of("s12")
+    base = {**WINDOW, "metric": "conversion_rate"}
+    sul, phone = {"region": "sul"}, {"product": "phone"}
+    alone = ctx.run("test_hypothesis", {**base, "dimensions": sul}).result
+    joint = ctx.run("test_hypothesis", {**base, "dimensions": sul, "together_with": phone}).result
+    wrong = ctx.run(
+        "test_hypothesis", {**base, "dimensions": sul, "together_with": {"product": "tablet"}}
+    ).result
+    assert alone["accepted"] is False  # sozinha, explica menos que o limiar de causa única
+    assert joint["accepted"] is True
+    assert joint["together_with"] == phone
+    assert joint["explained_share"] >= joint["threshold"]
+    assert [m["dimensions"] for m in joint["members"]] == [sul, phone]
+    assert all(m["explained_share"] >= 0.3 for m in joint["members"])
+    assert wrong["accepted"] is False
+
+
+def test_a_hypothesis_cannot_be_tested_together_with_itself(ctx_of):
+    request = {
+        **WINDOW,
+        "metric": "conversion_rate",
+        "dimensions": {"region": "sul"},
+        "together_with": {"region": "sul"},
+    }
+    finding = ctx_of("s12").run("test_hypothesis", request)
+    assert "together_with" in finding.result["error"]
+
+
 def test_decompose_metric_names_the_factor_that_moved(ctx_of):
     sessions = ctx_of("s05").run("decompose_metric", WINDOW).result
     rate = ctx_of("s06").run("decompose_metric", WINDOW).result

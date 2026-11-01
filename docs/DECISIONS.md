@@ -81,3 +81,30 @@ Cada decisão relevante entra aqui: contexto, decisão, motivo e alternativas de
 ## 13. Plano determinístico
 
 - **Decisão:** `investigation/plan.py` roda `compare_periods`, `decompose_metric`, a busca de causas e, para cada causa, `test_hypothesis` e `check_recent_changes`. Cada passo vira `Finding`, e `Hypothesis.finding_ids` aponta para as provas. É a linha de base da ablação com o modo `llm`.
+
+## 14. Duas causas independentes se provam juntas (`test_hypothesis` com `together_with`)
+
+- **Contexto:** o verificador da etapa 4 exige que toda causa do relatório tenha um `test_hypothesis` aceito. Em s12 (duas causas), cada causa sozinha explica ~53% da variação, abaixo do limiar de causa única (60%), então o plano da etapa 3 registrava como prova dois `test_hypothesis` com `accepted = false`. O relatório citava provas que o próprio código reprovava.
+- **Decisão:** `test_hypothesis` ganha o parâmetro opcional `together_with` (a outra causa). Com ele, a hipótese é "as duas juntas": aceita se a união explica pelo menos `EP_MULTI_TOTAL`, as outras fatias estão estáveis e cada causa explica pelo menos `EP_MULTI_EACH` sozinha (a mesma regra de `_two_causes`). O resultado traz `together_with` e `members` (o que cada causa explica sozinha). O plano roda esse teste uma vez e as duas hipóteses apontam para ele.
+- **Motivo:** a prova passa a ser a mesma regra que achou as causas, e o verificador pode ser estrito (`accepted` e mesmas dimensões).
+- **Descartado:** relaxar o verificador para aceitar causas do plano sem teste aceito (tiraria a garantia "só o código confirma"); baixar o limiar de causa única (aceitaria falsas causas).
+
+## 15. Placeholders: o código escreve todo número
+
+- **Decisão:** o texto do LLM cita valores como `{f003.explained_share}`. O caminho segue o `result` do `Finding` (`{f004.inside.change_pct}`, `{f005.changes.0.description}`); `params.` lê os parâmetros da consulta. Só valores simples são aceitos. O código formata em pt-BR pelo nome do campo: `change_pct` com sinal e uma casa, `*_share` em porcentagem inteira, `z` com uma casa, e `observed`/`expected`/`change` de `conversion_rate` como porcentagem (a taxa é uma fração).
+- **Motivo:** o LLM nunca escreve número, então não há como errar uma casa decimal nem inventar um valor. Dígito fora de placeholder é recusado, exceto versões conhecidas (`3.2`), que são valores de dimensão.
+- **Limite conhecido:** número por extenso ("três causas") e negação ("não caiu") não são vistos pelo verificador.
+
+## 16. Verificador: o que reprova
+
+- **Decisão:** sete códigos de problema (`loose_number`, `bad_placeholder`, `unknown_finding`, `foreign_dimension`, `incoherent_status`, `unconfirmed_cause`, `contradiction`). O verificador devolve todos os problemas, não só o primeiro, para o benchmark medir a taxa de rejeição.
+- **Fatos** só podem citar dimensões e valores das causas confirmadas; **opiniões** podem nomear hipóteses não confirmadas, mas qualquer número delas também vem de placeholder.
+- **Direção:** verbos ("subiu", "caiu", "aumentou", "reduziu") e "queda" são comparados com o `direction` dos fatos citados (ou de todos, se nada é citado). Se os fatos têm direções mistas e o texto não cita nenhum, não há veredito. Substantivos ambíguos ("aumento de preço", "alta confiança") ficaram de fora de propósito, para não reprovar texto correto.
+- **Status:** `identified` exige 1 ou 2 causas; `inconclusive` não pode ter causa nem ação proposta; fato é obrigatório.
+
+## 17. Analista: o LLM não decide o que o código sabe
+
+- **Decisão:** a resposta do LLM tem só `facts` e `opinions` (JSON Schema com `finding_id` restrito aos ids existentes). Status, causas e evidências são montados pelo código. Se o LLM falhar, responder fora do schema ou for reprovado pelo verificador, sai o relatório do narrador de template, sem opinião; o motivo fica em `ReportOutcome` (`rejection` ou `error`).
+- **Prompt:** curto, sem resposta de exemplo; cada `Finding` aparece numa linha com os campos citáveis já formatados. Findings com erro não aparecem.
+- **Narrador de template** (`agent/narrator.py`): fatos com placeholders, sem opinião. Duas causas provadas juntas viram um único fato (a estatística é da união) e as mudanças registradas são rotuladas por fatia. O relatório do narrador passa pelo verificador; se reprovar, é bug e o código levanta erro.
+- **Adiados:** a ação proposta (`actions_catalog.py`, etapa 8) e o cliente Ollama (`llm/ollama.py`, etapa 6). Opinião sobre hipótese não confirmada não precisa de marca obrigatória no texto; o rótulo "não verificada" é da camada inteira.

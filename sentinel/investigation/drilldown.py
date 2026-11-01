@@ -10,7 +10,7 @@ variação total cada fatia explica.
 """
 
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 import numpy as np
@@ -384,6 +384,8 @@ class HypothesisEval:
     total_significant: bool
     accepted: bool
     refinements: list[Candidate]
+    together_with: dict[str, str] | None = None  # 2ª causa, numa hipótese de duas causas
+    members: list[Candidate] = field(default_factory=list)  # quanto cada causa explica sozinha
 
 
 def _stats(table: SliceTable, index: int) -> SliceStats:
@@ -398,13 +400,59 @@ def _stats(table: SliceTable, index: int) -> SliceStats:
     )
 
 
+def _evaluate_two_causes(
+    cube: Cube,
+    metric: Metric,
+    window: Window,
+    params: DrillParams,
+    first: dict[str, str],
+    second: dict[str, str],
+) -> HypothesisEval:
+    """Duas causas independentes: juntas explicam o suficiente e cada uma pesa o bastante."""
+    union = membership_table(cube, metric, cube.mask(first) | cube.mask(second), window, params)
+    alone = [membership_table(cube, metric, cube.mask(d), window, params) for d in (first, second)]
+    ep = None if np.isnan(union.ep[0]) else float(union.ep[0])
+    eligible = bool(union.eligible[0] and union.nonempty[0] and union.nonempty[1])
+    stable = union.others_stable(0, params)
+    significant = total_is_significant(cube, metric, window, params)
+    each = [float(np.nan_to_num(t.ep[0], nan=0.0)) for t in alone]
+    accepted = (
+        significant
+        and eligible
+        and ep is not None
+        and ep >= params.ep_multi_total
+        and stable
+        and all(share >= params.ep_multi_each for share in each)
+    )
+    return HypothesisEval(
+        dimensions=first,
+        explained_share=ep,
+        threshold=params.ep_multi_total,
+        inside=_stats(union, 0),
+        outside=_stats(union, 1),
+        others_stable=stable,
+        eligible=eligible,
+        total_significant=significant,
+        accepted=accepted,
+        refinements=[],
+        together_with=second,
+        members=[
+            Candidate(d, _share(share)) for d, share in zip((first, second), each, strict=True)
+        ],
+    )
+
+
 def evaluate_hypothesis(
     cube: Cube,
     metric: Metric,
     window: Window,
     params: DrillParams,
     dimensions: dict[str, str],
+    together_with: dict[str, str] | None = None,
 ) -> HypothesisEval:
+    """Avalia uma causa; com `together_with`, avalia a hipótese de duas causas independentes."""
+    if together_with is not None:
+        return _evaluate_two_causes(cube, metric, window, params, dimensions, together_with)
     inside = cube.mask(dimensions)
     table = membership_table(cube, metric, inside, window, params)
     threshold = params.ep_single if len(dimensions) == 1 else params.ep_pair

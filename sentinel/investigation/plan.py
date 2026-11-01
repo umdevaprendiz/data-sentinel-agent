@@ -28,11 +28,19 @@ def investigate(ctx: ToolContext, anomaly: Anomaly) -> list[Hypothesis]:
         ctx.run("check_recent_changes", window)  # contexto para o relatório inconclusivo
         return []
 
+    # Uma causa é provada sozinha; duas causas independentes só se provam juntas (cada uma sozinha
+    # explica menos que o limiar de causa única).
+    base = {**window, "metric": anomaly.metric}
+    joint = None
+    if len(causes) == 2:
+        joint = ctx.run(
+            "test_hypothesis",
+            {**base, "dimensions": causes[0].dimensions, "together_with": causes[1].dimensions},
+        )
+
     hypotheses = []
     for cause in causes:
-        proof = ctx.run(
-            "test_hypothesis", {**window, "metric": anomaly.metric, "dimensions": cause.dimensions}
-        )
+        proof = joint or ctx.run("test_hypothesis", {**base, "dimensions": cause.dimensions})
         changes = ctx.run("check_recent_changes", {**window, "scope": cause.dimensions})
         hypotheses.append(
             Hypothesis(

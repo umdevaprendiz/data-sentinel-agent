@@ -31,8 +31,16 @@ def test_plan_with_two_causes(ctx_of, events_of):
         frozenset({("region", "sul")}),
         frozenset({("product", "phone")}),
     }
-    assert len({i for h in hypotheses for i in h.finding_ids}) == 4
     by_id = {f.id: f for f in ctx.findings}
+    proofs = {h.finding_ids[0] for h in hypotheses}
+    assert len(proofs) == 1  # duas causas independentes se provam juntas
+    [proof] = (by_id[i] for i in proofs)
+    assert proof.result["accepted"] is True
+    assert {frozenset(m["dimensions"].items()) for m in proof.result["members"]} == {
+        frozenset({("region", "sul")}),
+        frozenset({("product", "phone")}),
+    }
+    assert len({i for h in hypotheses for i in h.finding_ids}) == 3
     registered = {
         h.dimensions and next(iter(h.dimensions.values())): by_id[h.finding_ids[1]].result["count"]
         for h in hypotheses

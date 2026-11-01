@@ -5,7 +5,9 @@ import pytest
 from sentinel.config import Settings
 from sentinel.data.db import connect_readonly
 from sentinel.data.generator import generate_events, load_scenarios, write_database
+from sentinel.detection.detector import DetectorParams, daily_series, detect, select_root
 from sentinel.investigation.cube import Cube
+from sentinel.investigation.plan import investigate
 from sentinel.investigation.tools import ToolContext
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,3 +72,19 @@ def ctx_of(scenarios, seed, tmp_path_factory):
     yield get
     for con in connections:
         con.close()
+
+
+@pytest.fixture(scope="session")
+def plan_of(ctx_of, events_of):
+    """(anomalia, hipóteses, findings) do plano determinístico sobre um cenário (cacheado)."""
+    cache = {}
+
+    def get(scenario_id: str):
+        if scenario_id not in cache:
+            anomaly = select_root(detect(daily_series(events_of(scenario_id)), DetectorParams()))
+            ctx = ctx_of(scenario_id)
+            hypotheses = investigate(ctx, anomaly)
+            cache[scenario_id] = (anomaly, hypotheses, list(ctx.findings))
+        return cache[scenario_id]
+
+    return get
