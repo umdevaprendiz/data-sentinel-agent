@@ -2,7 +2,7 @@
 
 Agente autônomo que **vigia métricas de negócio, detecta anomalias, investiga a causa sozinho, dá uma opinião própria e age conforme o nível de autonomia que conquistou**. Tudo o que ele afirma como *fato* é conferido por código.
 
-É um projeto de portfólio de engenharia de IA. Os dados são **sintéticos**, gerados pelo próprio projeto com a causa de cada anomalia **injetada de propósito**, o que dá um gabarito para medir se o agente acertou.
+É um projeto de engenharia de IA. Os dados são **sintéticos**, gerados pelo próprio projeto com a causa de cada anomalia **injetada de propósito**, o que dá um gabarito para medir se o agente acertou.
 
 > **O LLM propõe e opina; o código executa, mede e veta.**
 > O modelo escolhe consultas, levanta hipóteses e escreve opiniões. Todo número vem de uma consulta executada pelo código, e uma hipótese só vira causa se o código a confirmar. O modelo pode errar na opinião, mas não consegue inventar um fato.
