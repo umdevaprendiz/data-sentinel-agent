@@ -108,3 +108,24 @@ Cada decisão relevante entra aqui: contexto, decisão, motivo e alternativas de
 - **Prompt:** curto, sem resposta de exemplo; cada `Finding` aparece numa linha com os campos citáveis já formatados. Findings com erro não aparecem.
 - **Narrador de template** (`agent/narrator.py`): fatos com placeholders, sem opinião. Duas causas provadas juntas viram um único fato (a estatística é da união) e as mudanças registradas são rotuladas por fatia. O relatório do narrador passa pelo verificador; se reprovar, é bug e o código levanta erro.
 - **Adiados:** a ação proposta (`actions_catalog.py`, etapa 8) e o cliente Ollama (`llm/ollama.py`, etapa 6). Opinião sobre hipótese não confirmada não precisa de marca obrigatória no texto; o rótulo "não verificada" é da camada inteira.
+
+## 18. Nada sensível sai: segredos, erros, logs e texto do banco
+
+- **Contexto:** o projeto é público. Um segredo ou um caminho pessoal em log, traceback ou mensagem de erro vira vazamento. O Typer, por padrão, imprime as variáveis locais de cada frame nos tracebacks, o que poderia expor o DSN e o token. O `httpx` registra a URL de cada requisição, e a API do Telegram leva o token na URL.
+- **Decisão:**
+  - `MEMORY_DSN` e `TELEGRAM_BOT_TOKEN` são `SecretStr` (não aparecem em `repr`, `str` nem `model_dump`). `Settings.secret_values()` lista o que deve ser redigido, inclusive a senha dentro do DSN.
+  - `security.redact` troca por `[REDIGIDO]` os segredos registrados, senhas em URLs de conexão, tokens do Telegram, chaves conhecidas, valores após `senha=`/`token=`/`api_key=` e a pasta pessoal (`~`). Os logs usam `RedactingFormatter` (mensagem e traceback), e `httpx`/`httpcore` ficam em `WARNING`.
+  - O comando `sentinel` roda por `cli.run`: erro inesperado mostra só a família e o tipo (`Falha ao acessar o Postgres da memória (OperationalError)`), nunca a mensagem original. Erro de configuração lista os **nomes** dos campos inválidos, não os valores. `SENTINEL_DEBUG=1` mostra o traceback sem variáveis locais e redigido. O Typer roda com `pretty_exceptions_enable=False`.
+  - Texto vindo do banco (`changes.description`) passa por `clean_text` antes de chegar ao prompt e ao terminal: sem caracteres de controle e de formatação (ANSI, bidi), um espaço entre palavras e no máximo 200 caracteres. O prompt do analista diz que os fatos são dados, não instruções.
+  - O erro do `OllamaEmbedder` não repete a mensagem do `httpx` (ela pode trazer URL com credencial).
+  - Higiene automática: `tests/test_repo_hygiene.py` falha se um arquivo privado, um segredo ou um caminho pessoal estiver versionado ou for entrar num `git add .`. O relatório diz arquivo e linha, nunca o valor.
+- **Regra de trabalho:** antes de qualquer preparação de commit, rodar `pytest`, conferir `git status` e `git diff` e checar log, traceback e mensagens de erro do que mudou. Todo log novo (por exemplo o `audit.jsonl` da etapa 5 e o Telegram da etapa 7) usa `redact` e nunca grava DSN, token nem a URL do bot.
+- **Auditado e sem achado:** todo SQL do código usa parâmetros ou colunas constantes; a conexão com os eventos é `mode=ro` com `query_only`; `pip-audit` não encontrou vulnerabilidade conhecida nas dependências.
+- **Limite conhecido:** a redação por padrão não pega um segredo sem formato conhecido que não esteja registrado. Por isso o `Settings` registra tudo o que é secreto, e novos segredos devem entrar em `secret_values()`.
+- **Descartado:** confiar no `repr` do Pydantic sem `SecretStr`; mostrar a mensagem original do erro "só em desenvolvimento" (acaba indo para issues públicas); remover o traceback por completo (atrapalha quem testa).
+
+## 19. Publicação
+
+- `README.md`, `LICENSE` (MIT), `SECURITY.md`, CI (`.github/workflows/ci.yml`, permissão só de leitura, sem senha: o Postgres do job aceita conexão local sem senha) e Dependabot (pip e GitHub Actions).
+- O `.gitignore` ignora só `/data/` e `/logs/` da raiz: a regra antiga `data/` escondia o pacote `sentinel/data/` (gerador e conexão), que por isso nunca tinha sido versionado.
+- O `CLAUDE.md` e o `data-sentinel-CLAUDE.md` seguem fora do Git; o README e este arquivo são a documentação pública.

@@ -10,6 +10,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sentinel.schemas import Finding
+from sentinel.security import clean_text
 
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 _TOKEN = re.compile(r"^(f\d{3,})\.([A-Za-z_]\w*|\d+)(\.([A-Za-z_]\w*|\d+))*$")
@@ -94,7 +95,7 @@ def format_value(name: str, value: Any, metric: str | None = None) -> str:
     if isinstance(value, bool):
         return "sim" if value else "não"
     if isinstance(value, str):
-        return value
+        return clean_text(value)  # texto do banco: sem controle de terminal, curto
     if isinstance(value, int):
         return _decimal(value, 0)
     if name.endswith("change_pct"):

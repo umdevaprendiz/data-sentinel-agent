@@ -1,5 +1,7 @@
 """Interface de linha de comando (seção 15 do CLAUDE.md)."""
 
+import os
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -20,10 +22,14 @@ from sentinel.detection.detector import DetectorParams, load_daily_series, selec
 from sentinel.detection.detector import detect as detect_anomalies
 from sentinel.investigation.plan import investigate as investigate_plan
 from sentinel.investigation.tools import ToolContext
+from sentinel.security import configure_logging, describe_error, redact
 
 app = typer.Typer(
     help="DataSentinel: agente que investiga anomalias em métricas de negócio.",
     no_args_is_help=True,
+    # Nunca imprimir variáveis locais (poderiam trazer DSN ou token); `run` trata os erros.
+    pretty_exceptions_enable=False,
+    pretty_exceptions_show_locals=False,
 )
 
 DEFAULT_SCENARIOS = Path("scenarios/scenarios.jsonl")
@@ -32,6 +38,27 @@ DEFAULT_SCENARIOS = Path("scenarios/scenarios.jsonl")
 @app.callback()
 def main() -> None:
     """DataSentinel."""
+    configure_logging(get_settings())
+
+
+def run() -> None:
+    """Ponto de entrada do comando `sentinel`: erros inesperados saem sem dados sensíveis.
+
+    Com `SENTINEL_DEBUG=1` mostra o traceback (sem variáveis locais e com segredos redigidos).
+    Mesmo assim, não cole esse traceback em issues públicas sem ler antes.
+    """
+    try:
+        app()
+    except KeyboardInterrupt:
+        typer.echo("Interrompido.", err=True)
+        raise SystemExit(130) from None
+    except Exception as error:
+        typer.echo(f"Erro: {describe_error(error)}", err=True)
+        if os.environ.get("SENTINEL_DEBUG") == "1":
+            typer.echo(redact("".join(traceback.format_exception(error))), err=True)
+        else:
+            typer.echo("Defina SENTINEL_DEBUG=1 para ver o traceback.", err=True)
+        raise SystemExit(1) from None
 
 
 @app.command()
@@ -48,7 +75,7 @@ def detect(
     settings = get_settings()
     db_path = settings.db_path if db_path is None else db_path
     if not db_path.exists():
-        raise typer.BadParameter(f"{db_path} não existe; rode `sentinel generate` antes")
+        raise typer.BadParameter(redact(f"{db_path} não existe; rode `sentinel generate` antes"))
 
     con = connect_readonly(db_path)
     try:
@@ -86,7 +113,7 @@ def investigate(
     settings = get_settings()
     db_path = settings.db_path if db_path is None else db_path
     if not db_path.exists():
-        raise typer.BadParameter(f"{db_path} não existe; rode `sentinel generate` antes")
+        raise typer.BadParameter(redact(f"{db_path} não existe; rode `sentinel generate` antes"))
 
     con = connect_readonly(db_path)
     try:

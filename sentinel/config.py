@@ -3,8 +3,9 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlsplit
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,11 +56,30 @@ class Settings(BaseSettings):
     auto_min_history: int = 10
     auto_max_per_hour: int = 2
 
+    # Memória (pgvector); DSN vazio = memória só em RAM, que não persiste
+    memory_dsn: SecretStr = SecretStr("")
+    embed_model: str = "nomic-embed-text"
+    embed_dim: int = Field(default=768, ge=1)
+    memory_top_k: int = Field(default=3, ge=1)
+    memory_min_similarity: float = Field(default=0.75, ge=0, le=1)
+
     # Incidentes e Telegram
     approval_timeout_s: float = 3600
     cooldown_h: float = 24
-    telegram_bot_token: str = ""
+    telegram_bot_token: SecretStr = SecretStr("")
     telegram_chat_id: str = ""
+
+    def secret_values(self) -> list[str]:
+        """Valores que nunca podem aparecer em log, traceback ou mensagem de erro."""
+        dsn = self.memory_dsn.get_secret_value()
+        values = [self.telegram_bot_token.get_secret_value(), dsn]
+        try:
+            password = urlsplit(dsn).password if dsn else None
+        except ValueError:  # DSN malformado: o valor inteiro já está na lista
+            password = None
+        if password:
+            values += [password, unquote(password)]
+        return [v for v in values if v]
 
 
 @lru_cache

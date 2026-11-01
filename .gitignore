@@ -1,14 +1,28 @@
-# Especificação do projeto (fica fora do Git)
+# Especificação privada do projeto (fica fora do Git)
 CLAUDE.md
 data-sentinel-CLAUDE.md
 
-# Ambiente e segredos
-.venv/
+# Segredos e configuração local (só o .env.example vai para o Git)
 .env
+.env.*
+!.env.example
+*.pem
+*.key
 
-# Saídas geradas
-data/
-logs/
+# Ambiente
+.venv/
+
+# Saídas geradas (só na raiz: sentinel/data/ é código)
+/data/
+/logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# Ferramentas e editores locais
+.claude/
+.vscode/
+.idea/
 
 # Caches
 __pycache__/
