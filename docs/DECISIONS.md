@@ -129,3 +129,18 @@ Cada decisão relevante entra aqui: contexto, decisão, motivo e alternativas de
 - `README.md`, `LICENSE` (MIT), `SECURITY.md`, CI (`.github/workflows/ci.yml`, permissão só de leitura, sem senha: o Postgres do job aceita conexão local sem senha) e Dependabot (pip e GitHub Actions).
 - O `.gitignore` ignora só `/data/` e `/logs/` da raiz: a regra antiga `data/` escondia o pacote `sentinel/data/` (gerador e conexão), que por isso nunca tinha sido versionado.
 - O `CLAUDE.md` e o `data-sentinel-CLAUDE.md` seguem fora do Git; o README e este arquivo são a documentação pública.
+
+## 20. Memória com pgvector: incidentes e contexto
+
+- **Contexto:** o agente precisa lembrar incidentes parecidos (e o que o humano decidiu) e achar trechos da documentação relevantes. Os eventos continuam no SQLite somente leitura; a memória é outro banco, com escrita.
+- **Decisão:** pacote `sentinel/memory/` (em vez de um `memory.py`) com dois armazéns de mesmo contrato: incidentes (`add`, `get`, `set_state`, `find_open` para deduplicação, `similar`, `decision_stats` para a precisão da policy) e conhecimento (trechos de `.md`/`.txt` por título, `index` idempotente por hash, `search`). Backends: RAM (sem `MEMORY_DSN`) e Postgres com pgvector (`vector(N)`, índice HNSW, distância de cosseno). O mesmo teste de contrato roda nos dois (`pytest -m pg` para o Postgres).
+- **Embeddings:** `nomic-embed-text` pelo Ollama local (768 dimensões). Nada sai da máquina. Nos testes, `FakeEmbedder`.
+- **Segurança:** valores sempre como parâmetro SQL; só o nome do schema (validado por regex) e a dimensão (inteiro) entram na DDL, via `psycopg.sql`. Erro do Postgres vira `MemoryStoreError` com a família da exceção, sem DSN e sem o texto do banco. Resumo do incidente passa por `redact` e `clean_text` antes de gravar. A indexação recusa `.env*`, extensões fora de `.md`/`.txt`, arquivos grandes e trechos com segredo; a fonte guardada é caminho relativo. A senha do DSN é registrada para redação ao conectar.
+- **Genérico:** o `Incident` valida só o formato do nome da métrica e das dimensões, não uma lista fixa. A memória não pode impedir que o agente passe a vigiar outras métricas (ver decisão 21).
+- **Descartado:** guardar os eventos no Postgres (muda o modelo de leitura e não traz ganho agora); embeddings na nuvem (viola "nada sai da máquina"); `pgvector` sem índice (fica lento com muitos incidentes).
+
+## 21. Métricas e dimensões descobertas, não fixas (planejado)
+
+- **Contexto:** hoje `Metric` e `Dimension` são listas fixas em `schemas.py`, e o gerador, o detector e o cubo as conhecem. O agente só vigia o que foi escrito no código, o que contradiz a autonomia.
+- **Decisão (a implementar em etapa própria):** um `SchemaProfile` descoberto nos dados a cada execução: coluna de tempo, **dimensões** (texto de baixa cardinalidade), **medidas aditivas** (numéricas somáveis) e **métricas derivadas** (razões entre duas medidas aditivas, como `conversions / sessions`). O LLM pode *propor* uma métrica derivada ou uma dimensão; o **código valida** (as colunas existem, a razão é bem definida, a cardinalidade é razoável) e só então ela entra no menu. O perfil tem hash; quando a estrutura muda (coluna ou valor novo), o agente registra no audit e recalcula, sem precisar de alteração de código.
+- **Mantém o princípio:** o LLM propõe, o código valida e mede.

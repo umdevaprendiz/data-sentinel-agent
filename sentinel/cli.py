@@ -22,6 +22,8 @@ from sentinel.detection.detector import DetectorParams, load_daily_series, selec
 from sentinel.detection.detector import detect as detect_anomalies
 from sentinel.investigation.plan import investigate as investigate_plan
 from sentinel.investigation.tools import ToolContext
+from sentinel.memory.factory import open_memory
+from sentinel.memory.knowledge import index_files
 from sentinel.security import configure_logging, describe_error, redact
 
 app = typer.Typer(
@@ -33,6 +35,12 @@ app = typer.Typer(
 )
 
 DEFAULT_SCENARIOS = Path("scenarios/scenarios.jsonl")
+DEFAULT_DOCS = [Path("README.md"), Path("SECURITY.md"), Path("docs/DECISIONS.md")]
+
+memory_app = typer.Typer(
+    help="Memória de incidentes e busca de contexto (pgvector).", no_args_is_help=True
+)
+app.add_typer(memory_app, name="memory")
 
 
 @app.callback()
@@ -168,3 +176,58 @@ def generate(
     rows = len(generate_events(chosen, seed))
     typer.echo(f"{chosen.id} ({chosen.kind}): {chosen.description}")
     typer.echo(f"  {rows} linhas em {db_path} | gabarito em {truth_path} | semente {seed}")
+
+
+@memory_app.command("check")
+def memory_check() -> None:
+    """Confere a conexão com o Postgres e a extensão pgvector (nunca mostra o DSN)."""
+    settings = get_settings()
+    if not settings.memory_dsn.get_secret_value():
+        typer.echo("MEMORY_DSN vazio: a memória fica só em RAM e não persiste.")
+        return
+    memory = open_memory(settings)
+    try:
+        assert memory.pg is not None
+        for name, value in memory.pg.status().items():
+            typer.echo(f"  {name}: {redact(str(value))}")
+        typer.echo(f"  trechos de contexto: {memory.knowledge.count()}")
+    finally:
+        memory.close()
+
+
+@memory_app.command("index")
+def memory_index(
+    paths: Annotated[
+        list[Path] | None, typer.Argument(help="arquivos .md/.txt; padrão: README e docs")
+    ] = None,
+) -> None:
+    """Indexa documentos na busca de contexto (trechos com segredo são recusados)."""
+    memory = open_memory(get_settings())
+    try:
+        report = index_files(memory.knowledge, paths or DEFAULT_DOCS, root=Path.cwd())
+    finally:
+        memory.close()
+    typer.echo(
+        f"[{memory.backend}] novos: {report.added} | mantidos: {report.kept} "
+        f"| removidos: {report.removed}"
+    )
+    for item in report.skipped:
+        typer.echo(f"  ignorado: {item}")
+
+
+@memory_app.command("search")
+def memory_search(
+    query: Annotated[str, typer.Argument(help="o que procurar")],
+    k: Annotated[int | None, typer.Option(help="quantos resultados")] = None,
+) -> None:
+    """Busca os trechos de contexto mais parecidos com a pergunta."""
+    settings = get_settings()
+    memory = open_memory(settings)
+    try:
+        hits = memory.knowledge.search(query, k or settings.memory_top_k, 0.0)
+    finally:
+        memory.close()
+    if not hits:
+        typer.echo("Nada encontrado (rode `sentinel memory index` primeiro).")
+    for hit in hits:
+        typer.echo(f"{hit.similarity:.2f}  {hit.chunk.label}")

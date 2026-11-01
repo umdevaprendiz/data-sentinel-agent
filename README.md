@@ -29,7 +29,8 @@ Níveis de autonomia: **L1** relatório · **L2** propõe uma ação e espera ap
 | 2 | Detector de anomalias com início estimado e métrica-raiz | ✅ |
 | 3 | Menu de ferramentas, drill-down com efeito de mistura, plano determinístico | ✅ |
 | 4 | Verificador, placeholders, narrador de template e analista (testado com um LLM falso) | ✅ |
-| — | Memória de incidentes e busca de contexto com pgvector | ⬜ em construção |
+| — | Memória de incidentes e busca de contexto com pgvector (RAM ✅, Postgres escrito e aguardando a extensão pgvector no servidor) | ⬜ em verificação |
+| — | Métricas e dimensões descobertas nos dados em vez de fixas (decisão 21) | ⬜ planejado |
 | 5 | Grafo (LangGraph), memória e log de auditoria | ⬜ |
 | 6 | Investigador conduzido pelo LLM (Ollama) | ⬜ |
 | 7 | Aprovação pelo Telegram (L2) | ⬜ |

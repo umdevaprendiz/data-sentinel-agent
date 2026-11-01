@@ -1,6 +1,9 @@
+import uuid
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from sentinel.config import Settings
 from sentinel.data.db import connect_readonly
@@ -9,6 +12,8 @@ from sentinel.detection.detector import DetectorParams, daily_series, detect, se
 from sentinel.investigation.cube import Cube
 from sentinel.investigation.plan import investigate
 from sentinel.investigation.tools import ToolContext
+from sentinel.memory import MemoryStoreError
+from sentinel.memory.pg import PgMemory
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIOS_FILE = ROOT / "scenarios" / "scenarios.jsonl"
@@ -88,3 +93,30 @@ def plan_of(ctx_of, events_of):
         return cache[scenario_id]
 
     return get
+
+
+# --- Postgres com pgvector (testes marcados com `pg`) -------------------------------------------
+
+
+class _PgTestSettings(BaseSettings):
+    """DSN do banco de testes (`TEST_MEMORY_DSN` no `.env`): nunca o banco de uso real."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    test_memory_dsn: SecretStr = SecretStr("")
+
+
+@pytest.fixture
+def pg_memory():
+    """`PgMemory` num schema próprio e descartável. Sem `TEST_MEMORY_DSN`, o teste é pulado."""
+    dsn = _PgTestSettings().test_memory_dsn.get_secret_value()
+    if not dsn:
+        pytest.skip("TEST_MEMORY_DSN não configurado")
+    schema = f"t_{uuid.uuid4().hex[:12]}"
+    try:
+        memory = PgMemory.connect(dsn, dim=64, schema=schema)
+    except MemoryStoreError as error:  # configurado mas inutilizável: falha, não pula
+        pytest.fail(f"banco de testes inutilizável: {error}", pytrace=False)
+    yield memory
+    memory.drop_schema()
+    memory.close()
