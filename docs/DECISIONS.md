@@ -145,3 +145,10 @@ Cada decisão relevante entra aqui: contexto, decisão, motivo e alternativas de
 - **Contexto:** hoje `Metric` e `Dimension` são listas fixas em `schemas.py`, e o gerador, o detector e o cubo as conhecem. O agente só vigia o que foi escrito no código, o que contradiz a autonomia.
 - **Decisão (a implementar em etapa própria):** um `SchemaProfile` descoberto nos dados a cada execução: coluna de tempo, **dimensões** (texto de baixa cardinalidade), **medidas aditivas** (numéricas somáveis) e **métricas derivadas** (razões entre duas medidas aditivas, como `conversions / sessions`). O LLM pode *propor* uma métrica derivada ou uma dimensão; o **código valida** (as colunas existem, a razão é bem definida, a cardinalidade é razoável) e só então ela entra no menu. O perfil tem hash; quando a estrutura muda (coluna ou valor novo), o agente registra no audit e recalcula, sem precisar de alteração de código.
 - **Mantém o princípio:** o LLM propõe, o código valida e mede.
+
+## 22. Checkpoint do grafo em SQLite (`langgraph-checkpoint-sqlite`)
+
+- **Contexto:** o grafo não bloqueia esperando o humano: o nó de aprovação usa `interrupt` e o estado do incidente fica num checkpoint (`logs/checkpoints.db`). A aprovação chega depois, às vezes em outro processo (Telegram, CLI), e o grafo retoma de onde parou. O `SqliteSaver` vem de um pacote separado do `langgraph`; ele estava instalado no ambiente de desenvolvimento, mas não declarado, e o CI (que instala só o `pyproject.toml`) quebrou nos testes do grafo.
+- **Decisão:** declarar `langgraph-checkpoint-sqlite>=3.1` nas dependências. Sem pasta de logs (testes, benchmark), o grafo usa o `InMemorySaver` do próprio `langgraph`.
+- **Motivo:** é o checkpointer oficial do LangGraph para SQLite, que o projeto já usa (sem servidor, um arquivo local). A retomada por outro `Runtime`, lendo o mesmo arquivo, é testada em `test_graph.py`.
+- **Descartado:** checkpointer próprio sobre `sqlite3` (reimplementa serialização e versões do estado do LangGraph); só `InMemorySaver` (a aprovação não sobreviveria ao fim do processo); Postgres para o checkpoint (exigiria o banco da memória até para quem não o usa).
