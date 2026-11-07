@@ -293,6 +293,17 @@ def _key(tool: str, params: dict) -> str:
     return tool + json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
 
 
+def _normalized(tool: str, params: dict) -> dict:
+    """Parâmetros como o `Finding` os guarda (com os padrões preenchidos), para comparar passos.
+
+    Parâmetros inválidos ficam como vieram: é assim que o `Finding` de erro os guarda.
+    """
+    try:
+        return TOOLS[tool].params.model_validate(params).model_dump(mode="json")
+    except ValidationError:
+        return params
+
+
 def _ask(llm: LLMClient, system: str, prompt: str, schema: dict, model: type[BaseModel]):
     """Até duas tentativas; devolve (resposta, chamadas, inválidas)."""
     invalid = 0
@@ -378,13 +389,11 @@ def explore_round(
 
     params = {**_defaults(answer.tool, anomaly), **(answer.params or {})}
     seen = {_key(f.tool, f.params) for f in ctx.findings}
-    if _key(answer.tool, params) in seen:
-        stats["blocked"] += 1
+    if _key(answer.tool, _normalized(answer.tool, params)) in seen:
+        stats["blocked"] += 1  # mesmo passo, mesmo depois de completar os padrões: não executa
         return RoundResult(False, current, "blocked", reasoning, stats=stats)
     finding = ctx.run(answer.tool, params)
     stats["steps"] += 1
-    if _key(finding.tool, finding.params) in seen and "error" not in finding.result:
-        stats["blocked"] += 1  # mesmos parâmetros depois de normalizados
     return RoundResult(False, current, "tool", reasoning, finding.id, stats=stats)
 
 
@@ -440,28 +449,31 @@ def confirm(
     if not names:
         return [], []
 
-    accepted: list[tuple[dict, Finding]] = []
-    for dims in names:
-        proof = _test(ctx, anomaly, dims)
+    accepted: list[tuple[dict, dict, Finding]] = []  # (hipótese do LLM, fatia final, prova)
+    for name in names:
+        proof = _test(ctx, anomaly, name)
         if "error" in proof.result or not proof.result.get("accepted"):
             continue
+        dims = name
         refinements = proof.result.get("refinements") or []
         if refinements:  # a hipótese mais específica que ainda explica
             refined = _test(ctx, anomaly, refinements[0]["dimensions"])
             if refined.result.get("accepted"):
                 dims, proof = refinements[0]["dimensions"], refined
-        accepted.append((dims, proof))
+        accepted.append((name, dims, proof))
 
     if accepted:
-        dims, proof = max(
-            accepted, key=lambda a: (a[1].result.get("explained_share") or 0, len(a[0]))
+        _, dims, proof = max(
+            accepted, key=lambda a: (a[2].result.get("explained_share") or 0, len(a[1]))
         )
         hypothesis = Hypothesis(
             dimensions=dims,
             explained_share=min(max(proof.result["explained_share"], 0.0), 1.0),
             finding_ids=[proof.id, _changes(ctx, anomaly, dims).id],
         )
-        return [hypothesis], [d for d in names if d != dims]
+        # Hipótese aceita e refinada até a causa (`android` → `android + 3.2`) foi confirmada.
+        explained = [name for name, final, _ in accepted if final == dims]
+        return [hypothesis], [d for d in names if d != dims and d not in explained]
 
     if len(names) >= 2:  # duas causas independentes só se provam juntas
         first, second = names[0], names[1]
