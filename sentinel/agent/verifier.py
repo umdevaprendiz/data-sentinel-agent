@@ -17,7 +17,8 @@ from sentinel.agent.placeholders import (
     strip_placeholders,
     tokens,
 )
-from sentinel.schemas import DIMENSION_VALUES, Finding, Report
+from sentinel.data.profile import DEFAULT_PROFILE, SchemaProfile
+from sentinel.schemas import Finding, Report
 
 Code = Literal[
     "loose_number",
@@ -34,12 +35,24 @@ _UP = re.compile(r"\b(subiu|subiram|aumentou|aumentaram|cresceu|cresceram|dispar
 _DOWN = re.compile(
     r"\b(caiu|cairam|caíram|diminuiu|diminuíram|reduziu|reduziram|despencou|recuou|queda)\b"
 )
-_VERSIONS = sorted(
-    (v for values in DIMENSION_VALUES.values() for v in values if any(c.isdigit() for c in v)),
-    key=len,
-    reverse=True,
-)
-_VERSION = re.compile(r"(?<![\d.])(?:" + "|".join(re.escape(v) for v in _VERSIONS) + r")(?!\.?\d)")
+
+
+def _version_pattern(profile: SchemaProfile) -> re.Pattern[str] | None:
+    """Valores de dimensão com dígito (`3.2`): são nomes de fatia, não números soltos."""
+    versions = sorted(
+        {
+            v
+            for values in profile.dimensions.values()
+            for v in values
+            if any(c.isdigit() for c in v)
+        },
+        key=len,
+        reverse=True,
+    )
+    if not versions:
+        return None
+    body = "|".join(re.escape(v) for v in versions)
+    return re.compile(r"(?<![\d.])(?:" + body + r")(?!\.?\d)")
 
 
 class Problem(BaseModel):
@@ -55,9 +68,11 @@ class Verification(BaseModel):
         return not self.problems
 
 
-def _loose_number(text: str) -> str | None:
+def _loose_number(text: str, versions: re.Pattern[str] | None = None) -> str | None:
     """Trecho com dígito fora de placeholder; versões conhecidas (`3.2`) não contam."""
-    bare = _VERSION.sub(" ", strip_placeholders(text))
+    bare = strip_placeholders(text)
+    if versions is not None:
+        bare = versions.sub(" ", bare)
     found = re.search(r"\S*\d\S*", bare)
     return found.group(0) if found else None
 
@@ -77,15 +92,18 @@ def _direction_words(text: str) -> set[str]:
 
 
 class _Check:
-    def __init__(self, report: Report, findings: list[Finding]) -> None:
+    def __init__(self, report: Report, findings: list[Finding], profile: SchemaProfile) -> None:
         self.report = report
+        self.profile = profile
+        self.versions = _version_pattern(profile)
         self.by_id = {f.id: f for f in findings}
         self.problems: list[Problem] = []
         causes = report.causes
         self.allowed = {name for c in causes for name in c.dimensions} | {
             value for c in causes for value in c.dimensions.values()
         }
-        every_name = set(DIMENSION_VALUES) | {v for vs in DIMENSION_VALUES.values() for v in vs}
+        dims = profile.dimensions
+        every_name = set(dims) | {v for vs in dims.values() for v in vs}
         self.foreign = sorted(every_name - self.allowed)
 
     def add(self, code: Code, message: str) -> None:
@@ -109,13 +127,13 @@ class _Check:
         return next(iter(found)) if len(found) == 1 else None
 
     def text(self, where: str, text: str, cited: list[str], *, is_fact: bool) -> None:
-        loose = _loose_number(text)
+        loose = _loose_number(text, self.versions)
         if loose:
             self.add("loose_number", f"{where}: número fora de placeholder ({loose!r})")
 
         for token in tokens(text):
             try:
-                resolve(token, self.by_id)
+                resolve(token, self.by_id, self.profile)
             except PlaceholderError as error:
                 self.add("bad_placeholder", f"{where}: {error}")
 
@@ -183,6 +201,8 @@ class _Check:
         return Verification(problems=self.problems)
 
 
-def verify(report: Report, findings: list[Finding]) -> Verification:
+def verify(
+    report: Report, findings: list[Finding], profile: SchemaProfile | None = None
+) -> Verification:
     """Confere o relatório contra os `Finding`s. `ok` só se nenhuma regra for violada."""
-    return _Check(report, findings).run()
+    return _Check(report, findings, profile or DEFAULT_PROFILE).run()

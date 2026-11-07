@@ -17,17 +17,17 @@ import numpy as np
 import pandas as pd
 
 from sentinel.config import Settings
-from sentinel.schemas import Anomaly, Metric
-
-# Ordem de prioridade para escolher a métrica-raiz:
-# revenue = sessions × conversion_rate × avg_ticket; as conversions e a revenue são derivadas.
-METRIC_PRIORITY: tuple[Metric, ...] = (
-    "sessions",
-    "conversion_rate",
-    "avg_ticket",
-    "conversions",
-    "revenue",
+from sentinel.data.profile import (
+    DEFAULT_PROFILE,
+    SchemaProfile,
+    discover_profile,
+    profile_from_frame,
 )
+from sentinel.schemas import Anomaly
+
+# Ordem de prioridade do perfil do gerador (revenue = sessions × conversion_rate × avg_ticket;
+# conversions e revenue são derivadas). Com outro perfil, a ordem vem de `SchemaProfile.metrics`.
+METRIC_PRIORITY: tuple[str, ...] = DEFAULT_PROFILE.metrics
 
 MIN_HISTORY_DAYS = 14
 MIN_SCALE = 1e-4
@@ -58,30 +58,40 @@ class DetectorParams:
 # --- Séries diárias -------------------------------------------------------------------------
 
 
-def _with_derived(daily: pd.DataFrame) -> pd.DataFrame:
+def _with_derived(daily: pd.DataFrame, profile: SchemaProfile) -> pd.DataFrame:
     daily = daily.astype(float)
-    daily["conversion_rate"] = daily["conversions"] / daily["sessions"].where(daily["sessions"] > 0)
-    daily["avg_ticket"] = daily["revenue"] / daily["conversions"].where(daily["conversions"] > 0)
-    return daily[list(METRIC_PRIORITY)]
+    for name, ratio in profile.ratios.items():
+        den = daily[ratio.denominator]
+        daily[name] = daily[ratio.numerator] / den.where(den > 0)
+    return daily[list(profile.metrics)]
 
 
-def daily_series(events: pd.DataFrame) -> pd.DataFrame:
+def daily_series(events: pd.DataFrame, profile: SchemaProfile | None = None) -> pd.DataFrame:
     """Série diária agregada (índice = dia, colunas = métricas) a partir da tabela `events`."""
-    daily = events.groupby("day")[["sessions", "conversions", "revenue"]].sum()
+    profile = profile or profile_from_frame(events)
+    daily = events.groupby(profile.time_column)[list(profile.measures)].sum()
     daily.index = pd.to_datetime(daily.index)
-    return _with_derived(daily)
+    return _with_derived(daily, profile)
 
 
-def load_daily_series(con: sqlite3.Connection) -> pd.DataFrame:
-    """O mesmo que `daily_series`, lendo do banco (somente leitura)."""
+def load_daily_series(
+    con: sqlite3.Connection, profile: SchemaProfile | None = None
+) -> pd.DataFrame:
+    """O mesmo que `daily_series`, somando no banco (somente leitura).
+
+    Os nomes de coluna vêm do perfil, que só aceita identificadores no formato `NAME_PATTERN`.
+    Sem perfil, ele é descoberto no próprio banco.
+    """
+    profile = profile or discover_profile(con)
+    time = profile.time_column
+    sums = ", ".join(f'SUM("{m}") AS "{m}"' for m in profile.measures)
     daily = pd.read_sql_query(
-        "SELECT day, SUM(sessions) AS sessions, SUM(conversions) AS conversions, "
-        "SUM(revenue) AS revenue FROM events GROUP BY day ORDER BY day",
+        f'SELECT "{time}", {sums} FROM "{profile.table}" GROUP BY "{time}" ORDER BY "{time}"',
         con,
-        index_col="day",
+        index_col=time,
     )
     daily.index = pd.to_datetime(daily.index)
-    return _with_derived(daily)
+    return _with_derived(daily, profile)
 
 
 # --- Núcleo ---------------------------------------------------------------------------------
@@ -154,7 +164,7 @@ def _refine_onset(z: np.ndarray, run_start: int, run_end: int, first_valid: int)
 
 
 def _detect_metric(
-    name: Metric, values: pd.Series, params: DetectorParams, end_pos: int
+    name: str, values: pd.Series, params: DetectorParams, end_pos: int
 ) -> Anomaly | None:
     expected = expected_series(values, params.baseline_weeks)
     first_valid = 7 * params.baseline_weeks
@@ -205,7 +215,10 @@ def _detect_metric(
 def detect(
     series: pd.DataFrame, params: DetectorParams | None = None, as_of: date | None = None
 ) -> list[Anomaly]:
-    """Anomalias na janela que termina em `as_of` (padrão: último dia), por ordem de prioridade."""
+    """Anomalias na janela que termina em `as_of` (padrão: último dia).
+
+    A ordem das colunas de `series` é a ordem de prioridade (a do perfil).
+    """
     params = params or DetectorParams()
     if (
         not series.index.is_monotonic_increasing
@@ -216,14 +229,20 @@ def detect(
 
     found = [
         anomaly
-        for name in METRIC_PRIORITY
-        if (anomaly := _detect_metric(name, series[name], params, end_pos)) is not None
+        for name in series.columns
+        if (anomaly := _detect_metric(str(name), series[name], params, end_pos)) is not None
     ]
     return found
 
 
-def select_root(anomalies: list[Anomaly]) -> Anomaly | None:
+def select_root(
+    anomalies: list[Anomaly], priority: tuple[str, ...] = METRIC_PRIORITY
+) -> Anomaly | None:
     """A métrica-raiz é a primeira da árvore de prioridade que disparou."""
     if not anomalies:
         return None
-    return min(anomalies, key=lambda a: METRIC_PRIORITY.index(a.metric))
+    order = list(priority)
+    return min(
+        anomalies,
+        key=lambda a: order.index(a.metric) if a.metric in order else len(order),
+    )

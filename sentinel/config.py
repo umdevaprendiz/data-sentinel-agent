@@ -16,15 +16,21 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     llm_model: str = "qwen2.5:3b"
     llm_timeout_s: float = 300
+    llm_seed: int = 0  # o modelo roda com temperatura 0 e esta semente
+    llm_cache: bool = (
+        False  # True = repete a resposta guardada para o mesmo (modelo, prompt, semente)
+    )
 
     # Modo e autonomia
     plan_mode: Literal["deterministic", "llm"] = "deterministic"
     autonomy_level: int = Field(default=2, ge=1, le=3)
     dry_run: bool = True
+    kill_switch: bool = False  # também ligado pela presença de logs/KILL_SWITCH
 
     # Dados
     db_path: Path = Path("data/sentinel.db")
     seed: int = 42
+    logs_dir: Path = Path("logs")  # audit, decisões, incidentes, checkpoints e simulador
 
     # Detector
     z_threshold: float = 3.5

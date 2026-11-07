@@ -10,7 +10,7 @@ import sys
 import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sentinel.config import Settings
@@ -67,6 +67,20 @@ def redact(text: str, secrets: Iterable[str] = ()) -> str:
     if home:
         text = text.replace(home, "~").replace(home.replace("\\", "/"), "~")
     return text
+
+
+def redact_obj(value: Any) -> Any:
+    """`redact` em cada texto de uma estrutura JSON (chaves e valores), sem quebrar o JSON.
+
+    Redigir o texto já serializado pode engolir uma aspa (`token=abc"`) e corromper o arquivo.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {redact(str(k)): redact_obj(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [redact_obj(v) for v in value]
+    return value
 
 
 def clean_text(value: str, limit: int = MAX_TEXT) -> str:

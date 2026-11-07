@@ -7,6 +7,8 @@ variação total cada fatia explica.
 - Métrica aditiva (`sessions`, `conversions`, `revenue`): EP(v) = (obs_v − esp_v) / (obs − esp).
 - Razão (`conversion_rate`, `avg_ticket`): o impacto soma o efeito da taxa e o efeito de
   mistura, de modo que a soma dos impactos das fatias é exatamente a variação da razão.
+
+Métricas, razões, dimensões e a medida de volume vêm do perfil do cubo (decisão 21).
 """
 
 import itertools
@@ -18,13 +20,8 @@ import numpy as np
 from sentinel.config import Settings
 from sentinel.detection.detector import MIN_HISTORY_DAYS, robust_scale
 from sentinel.investigation.cube import Cube
-from sentinel.schemas import DIMENSION_VALUES, Metric
 
-# Razões: (numerador, denominador).
-RATIO_METRICS: dict[str, tuple[str, str]] = {
-    "conversion_rate": ("conversions", "sessions"),
-    "avg_ticket": ("revenue", "conversions"),
-}
+Metric = str  # nome de métrica do perfil (validado em `SchemaProfile.check_metric`)
 OUTSIDE = "__fora__"
 
 
@@ -149,8 +146,11 @@ def build_table(
     obs_sum = {name: array[win].sum(axis=0) for name, array in daily.items()}
     exp_sum = {name: array[win].sum(axis=0) for name, array in expected.items()}
 
-    if metric in RATIO_METRICS:
-        num_name, den_name = RATIO_METRICS[metric]
+    cube.profile.check_metric(metric)
+    volume = cube.profile.volume
+    parts = cube.profile.ratio_parts(metric)
+    if parts is not None:
+        num_name, den_name = parts
         n_obs, d_obs = obs_sum[num_name], obs_sum[den_name]
         n_exp, d_exp = exp_sum[num_name], exp_sum[den_name]
         if d_obs.sum() <= 0 or d_exp.sum() <= 0:
@@ -192,7 +192,7 @@ def build_table(
         z[s] = daily_z.mean() * np.sqrt(last - first + 1)  # z da média da janela
 
     days = last - first + 1
-    sessions_per_day = exp_sum["sessions"] / days
+    sessions_per_day = exp_sum[volume] / days
     return SliceTable(
         metric=metric,
         labels=labels,
@@ -203,7 +203,7 @@ def build_table(
         ep=ep,
         z=z,
         eligible=sessions_per_day >= params.min_slice_sessions,
-        nonempty=exp_sum["sessions"] > 0,
+        nonempty=exp_sum[volume] > 0,
         total_obs=float(total_obs),
         total_exp=float(total_exp),
         total_change=total_change,
@@ -215,8 +215,8 @@ def dims_table(
 ) -> SliceTable:
     keys = np.zeros(cube.n_rows, dtype=np.int64)
     for name in dims:
-        keys = keys * len(DIMENSION_VALUES[name]) + cube.codes[name]
-    labels = list(itertools.product(*(DIMENSION_VALUES[name] for name in dims)))
+        keys = keys * len(cube.dims[name]) + cube.codes[name]
+    labels = list(itertools.product(*(cube.dims[name] for name in dims)))
     return build_table(cube, metric, keys, labels, window, params)
 
 
@@ -246,7 +246,7 @@ def single_dim_candidates(
     """Fatias de uma dimensão com EP alto e, se pedido, as demais fatias da dimensão estáveis."""
     threshold = params.ep_single if min_ep is None else min_ep
     found: list[Candidate] = []
-    for name in DIMENSION_VALUES:
+    for name in cube.dims:
         table = dims_table(cube, metric, (name,), window, params)
         if table.n_nonempty < 2:
             continue
@@ -270,7 +270,7 @@ def refinement_candidates(
     """Sub-fatias da hipótese (uma dimensão a mais) que ainda explicam quase o mesmo."""
     inside = cube.mask(dimensions)
     found: list[Candidate] = []
-    for extra, values in DIMENSION_VALUES.items():
+    for extra, values in cube.dims.items():
         if extra in dimensions:
             continue
         keys = np.where(inside, cube.codes[extra], len(values)).astype(np.int64)
@@ -295,7 +295,7 @@ def _refine(
 
 def _best_pair(cube: Cube, metric: Metric, window: Window, params: DrillParams) -> Candidate | None:
     best: Candidate | None = None
-    for first, second in itertools.combinations(DIMENSION_VALUES, 2):
+    for first, second in itertools.combinations(cube.dims, 2):
         table = dims_table(cube, metric, (first, second), window, params)
         for i, (a, b) in enumerate(table.labels):
             if table.eligible[i] and table.ep[i] >= params.ep_pair:
@@ -460,7 +460,7 @@ def evaluate_hypothesis(
     if len(dimensions) == 1:
         ((name, value),) = dimensions.items()
         by_dim = dims_table(cube, metric, (name,), window, params)
-        index = DIMENSION_VALUES[name].index(value)
+        index = cube.dims[name].index(value)
         stable = by_dim.others_stable(index, params)
     else:
         stable = table.others_stable(0, params)

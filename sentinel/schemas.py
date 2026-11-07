@@ -1,15 +1,19 @@
 """Contratos de dados do projeto (seção 6 do CLAUDE.md)."""
 
 from datetime import date
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
-Metric = Literal["sessions", "conversions", "conversion_rate", "avg_ticket", "revenue"]
-Dimension = Literal["region", "platform", "app_version", "product", "channel"]
+# Métricas e dimensões são descobertas nos dados (decisão 21, `data/profile.py`): aqui só o formato
+# do nome é fixo. As listas do gerador sintético ficam em `DIMENSION_VALUES`.
+NAME_PATTERN = r"^[a-z][a-z0-9_]{0,40}$"
+Metric = Annotated[str, Field(pattern=NAME_PATTERN)]
+Dimension = Annotated[str, Field(pattern=NAME_PATTERN)]
+KNOWN_METRICS = ("sessions", "conversions", "conversion_rate", "avg_ticket", "revenue")
 ChangeType = Literal["deploy", "price_change", "campaign_start", "campaign_end", "stock_out"]
 
-# A ordem das chaves é a ordem das dimensões no gerador.
+# Dimensões do gerador sintético (a ordem das chaves é a ordem das colunas no banco).
 DIMENSION_VALUES: dict[str, tuple[str, ...]] = {
     "region": ("norte", "nordeste", "centro_oeste", "sudeste", "sul"),
     "platform": ("android", "ios"),

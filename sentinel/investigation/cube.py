@@ -1,8 +1,9 @@
 """Cubo de eventos em memória: códigos inteiros por dimensão e somas diárias por fatia.
 
 Carrega a tabela `events` uma vez (somente leitura) e responde às consultas do drill-down
-sem voltar ao banco. Tolera buracos (dia sem linhas vira zero) e guarda o que encontrou,
-para que `check_data_quality` possa relatar.
+sem voltar ao banco. Dimensões e medidas vêm do perfil descoberto nos dados (decisão 21).
+Tolera buracos (dia sem linhas vira zero) e guarda o que encontrou, para que
+`check_data_quality` possa relatar.
 """
 
 import sqlite3
@@ -12,13 +13,12 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-from sentinel.schemas import DIMENSION_VALUES
-
-VALUE_COLUMNS = ("sessions", "conversions", "revenue")
+from sentinel.data.profile import SchemaProfile, load_events, profile_from_frame
 
 
 @dataclass
 class Cube:
+    profile: SchemaProfile
     start: date
     n_days: int
     day_idx: np.ndarray
@@ -38,27 +38,33 @@ class Cube:
 
     # --- Construção --------------------------------------------------------------------------
 
+    @property
+    def dims(self) -> dict[str, tuple[str, ...]]:
+        return self.profile.dimensions
+
     @classmethod
-    def from_frame(cls, events: pd.DataFrame) -> "Cube":
+    def from_frame(cls, events: pd.DataFrame, profile: SchemaProfile | None = None) -> "Cube":
         if events.empty:
             raise ValueError("a tabela events está vazia")
-        days = pd.to_datetime(events["day"])
+        profile = profile or profile_from_frame(events)
+        days = pd.to_datetime(events[profile.time_column])
         first = days.min()
         n_days = int((days.max() - first).days) + 1
         day_idx = (days - first).dt.days.to_numpy()
 
         codes: dict[str, np.ndarray] = {}
-        for name, allowed in DIMENSION_VALUES.items():
+        for name, allowed in profile.dimensions.items():
             coded = pd.Categorical(events[name], categories=list(allowed)).codes.astype(np.int64)
             if (coded < 0).any():
                 raise ValueError(f"valor desconhecido na dimensão {name}")
             codes[name] = coded
 
-        nulls = int(events[list(VALUE_COLUMNS)].isna().sum().sum())
-        values = {name: events[name].fillna(0).to_numpy(dtype=float) for name in VALUE_COLUMNS}
+        measures = list(profile.measures)
+        nulls = int(events[measures].isna().sum().sum())
+        values = {name: events[name].fillna(0).to_numpy(dtype=float) for name in measures}
 
         key = day_idx.astype(np.int64)
-        for name, allowed in DIMENSION_VALUES.items():
+        for name, allowed in profile.dimensions.items():
             key = key * len(allowed) + codes[name]
         duplicates = len(key) - len(np.unique(key))
 
@@ -66,12 +72,13 @@ class Cube:
         present[day_idx] = True
         start = first.date()
         missing = [start + timedelta(days=int(i)) for i in np.flatnonzero(~present)]
-        return cls(start, n_days, day_idx, codes, values, missing, duplicates, nulls)
+        return cls(profile, start, n_days, day_idx, codes, values, missing, duplicates, nulls)
 
     @classmethod
-    def from_connection(cls, con: sqlite3.Connection) -> "Cube":
-        columns = ", ".join(["day", *DIMENSION_VALUES, *VALUE_COLUMNS])
-        return cls.from_frame(pd.read_sql_query(f"SELECT {columns} FROM events", con))
+    def from_connection(
+        cls, con: sqlite3.Connection, profile: SchemaProfile | None = None
+    ) -> "Cube":
+        return cls.from_frame(load_events(con), profile)
 
     # --- Consulta ----------------------------------------------------------------------------
 
@@ -84,11 +91,12 @@ class Cube:
     def mask(self, dimensions: dict[str, str]) -> np.ndarray:
         selected = np.ones(self.n_rows, dtype=bool)
         for name, value in dimensions.items():
-            selected &= self.codes[name] == DIMENSION_VALUES[name].index(value)
+            selected &= self.codes[name] == self.dims[name].index(value)
         return selected
 
     def subset(self, keep: np.ndarray) -> "Cube":
         return Cube(
+            profile=self.profile,
             start=self.start,
             n_days=self.n_days,
             day_idx=self.day_idx[keep],

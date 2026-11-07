@@ -120,3 +120,17 @@ def pg_memory():
     yield memory
     memory.drop_schema()
     memory.close()
+
+
+@pytest.fixture(scope="session")
+def db_of(scenarios, seed, tmp_path_factory):
+    """Caminho de um banco gerado para o cenário (cacheado; abrir sempre como somente leitura)."""
+    folder = tmp_path_factory.mktemp("graph_dbs")
+
+    def get(scenario_id: str) -> Path:
+        path = folder / f"{scenario_id}.db"
+        if not path.exists():
+            write_database(scenarios[scenario_id], seed, path)
+        return path
+
+    return get

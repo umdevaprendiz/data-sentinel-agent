@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sentinel.agent.narrator import narrate
 from sentinel.agent.placeholders import finding_ids_in, flatten
 from sentinel.agent.verifier import Verification, verify
+from sentinel.data.profile import SchemaProfile
 from sentinel.llm.base import JsonObject, LLMClient, LLMError
 from sentinel.schemas import Anomaly, Finding, Hypothesis, Opinion, Report, Statement
 
@@ -99,6 +100,8 @@ def build_prompt(
     hypotheses: Sequence[Hypothesis],
     findings: Sequence[Finding],
     unconfirmed: Sequence[dict[str, str]] = (),
+    profile: SchemaProfile | None = None,
+    proposal: str | None = None,
 ) -> str:
     """Resumo compacto: o LLM vê os valores já formatados, não as tabelas."""
     direction = "queda" if anomaly.direction == "drop" else "pico"
@@ -118,9 +121,14 @@ def build_prompt(
     if unconfirmed:
         lines.append("Hipóteses NÃO confirmadas (só podem aparecer em 'opinions'):")
         lines += [f"- {_slice(d)}" for d in unconfirmed]
+    if proposal:
+        lines.append(
+            f"Ação escolhida pelo catálogo: {proposal}. Você não troca a ação; pode justificá-la "
+            "ou fazer uma ressalva em 'opinions'."
+        )
     lines.append("Fatos (id, ferramenta, campos citáveis):")
     for finding in usable(findings):
-        fields = "; ".join(f"{path}={value}" for path, value in flatten(finding).items())
+        fields = "; ".join(f"{path}={value}" for path, value in flatten(finding, profile).items())
         lines.append(f"{finding.id} {finding.tool}: {fields}")
     return "\n".join(lines)
 
@@ -131,13 +139,17 @@ def analyze(
     hypotheses: Sequence[Hypothesis],
     findings: Sequence[Finding],
     unconfirmed: Sequence[dict[str, str]] = (),
+    profile: SchemaProfile | None = None,
+    proposal: str | None = None,
 ) -> Report:
     """Rascunho do relatório. Status, causas e evidências vêm do código, não do modelo."""
     ids = [f.id for f in usable(findings)]
     if not ids:
         raise AnalystError("nenhum Finding utilizável")
     raw = llm.generate_json(
-        SYSTEM, build_prompt(anomaly, hypotheses, findings, unconfirmed), response_schema(ids)
+        SYSTEM,
+        build_prompt(anomaly, hypotheses, findings, unconfirmed, profile, proposal),
+        response_schema(ids),
     )
     try:
         draft = _Draft.model_validate(raw)
@@ -165,9 +177,10 @@ def _template(
     *,
     rejection: Verification | None = None,
     error: str | None = None,
+    profile: SchemaProfile | None = None,
 ) -> ReportOutcome:
     report = narrate(anomaly, list(hypotheses), list(findings))
-    check = verify(report, list(findings))
+    check = verify(report, list(findings), profile)
     if not check.ok:  # o narrador é código nosso: reprovar aqui é bug, não dado ruim
         raise RuntimeError(f"relatório de template reprovado: {check.problems}")
     return ReportOutcome(report=report, source="template", rejection=rejection, error=error)
@@ -179,15 +192,17 @@ def write_report(
     hypotheses: Sequence[Hypothesis],
     findings: Sequence[Finding],
     unconfirmed: Sequence[dict[str, str]] = (),
+    profile: SchemaProfile | None = None,
+    proposal: str | None = None,
 ) -> ReportOutcome:
     """Relatório verificado: do LLM se o verificador aprovar, senão do narrador de template."""
     if llm is None:
-        return _template(anomaly, hypotheses, findings)
+        return _template(anomaly, hypotheses, findings, profile=profile)
     try:
-        draft = analyze(llm, anomaly, hypotheses, findings, unconfirmed)
+        draft = analyze(llm, anomaly, hypotheses, findings, unconfirmed, profile, proposal)
     except (LLMError, AnalystError) as error:
-        return _template(anomaly, hypotheses, findings, error=str(error))
-    verification = verify(draft, list(findings))
+        return _template(anomaly, hypotheses, findings, error=str(error), profile=profile)
+    verification = verify(draft, list(findings), profile)
     if verification.ok:
         return ReportOutcome(report=draft, source="llm")
-    return _template(anomaly, hypotheses, findings, rejection=verification)
+    return _template(anomaly, hypotheses, findings, rejection=verification, profile=profile)

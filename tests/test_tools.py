@@ -16,6 +16,10 @@ EXPECTED_TOOLS = {
     "decompose_metric",
     "check_recent_changes",
     "check_data_quality",
+    "find_similar_incidents",
+    "run_sql",
+    "define_metric",
+    "add_dimension",
 }
 
 
@@ -285,3 +289,141 @@ def test_window_can_use_a_different_baseline(ctx_of):
     default = ctx_of("s05").run("compare_periods", {**WINDOW, "metric": "sessions"}).result
     assert short["expected"] != default["expected"]
     assert short["change_pct"] == pytest.approx(default["change_pct"], abs=0.03)
+
+
+# --- Catálogo com o perfil (decisão 21) -------------------------------------------------------
+
+
+def test_catalog_lists_the_metrics_and_dimensions_of_the_data(ctx_of):
+    ctx = ctx_of("s01")
+    by_name = {t["name"]: t["parameters"] for t in tool_catalog(ctx.profile)}
+    metric = by_name["compare_periods"]["properties"]["metric"]
+    assert metric["enum"] == list(ctx.profile.metrics)
+    dims = by_name["top_contributors"]["properties"]["dimensions"]
+    assert dims["items"]["enum"] == list(ctx.profile.dimensions)
+    together = by_name["test_hypothesis"]["properties"]["together_with"]
+    assert any(o.get("propertyNames") for o in together["anyOf"])
+
+
+def test_define_metric_adds_a_validated_ratio(ctx_of):
+    ctx = ctx_of("s10")
+    added = ctx.run(
+        "define_metric",
+        {"name": "revenue_per_session", "numerator": "revenue", "denominator": "sessions"},
+    )
+    assert added.result["accepted"] is True
+    assert "revenue_per_session" in ctx.profile.metrics
+    used = ctx.run("compare_periods", {**WINDOW, "metric": "revenue_per_session"})
+    assert "error" not in used.result
+    refused = ctx.run(
+        "define_metric", {"name": "bad", "numerator": "region", "denominator": "sessions"}
+    )
+    assert "não é uma medida" in refused.result["error"]
+
+
+def test_add_dimension_refuses_a_column_that_is_not_available(ctx_of):
+    finding = ctx_of("s01").run("add_dimension", {"column": "sessions"})
+    assert "não é uma coluna de texto disponível" in finding.result["error"]
+
+
+# --- run_sql (etapa 6) ------------------------------------------------------------------------
+
+
+def test_run_sql_reads_with_a_row_limit(ctx_of):
+    ctx = ctx_of("s01")
+    ok = ctx.run(
+        "run_sql",
+        {
+            "query": "SELECT platform, SUM(conversions) AS c FROM events "
+            "WHERE day >= '2026-03-26' GROUP BY platform ORDER BY platform"
+        },
+    )
+    assert ok.result["columns"] == ["platform", "c"]
+    assert [row[0] for row in ok.result["rows"]] == ["android", "ios"]
+    assert ok.result["truncated"] is False
+    many = ctx.run("run_sql", {"query": "SELECT day FROM events"}).result
+    assert many["row_count"] == ctx.settings.sql_max_rows
+    assert many["truncated"] is True
+    cte = ctx.run(
+        "run_sql",
+        {"query": "WITH t AS (SELECT region, sessions FROM events) SELECT COUNT(*) FROM t;"},
+    )
+    assert cte.result["rows"] == [[90 * 720]]
+
+
+@pytest.mark.parametrize(
+    ("query", "fragment"),
+    [
+        ("DELETE FROM events", "só SELECT"),
+        ("SELECT 1; DELETE FROM events", "uma instrução"),
+        ("PRAGMA table_info(events)", "só SELECT"),
+        ("SELECT * FROM pragma_table_info('events')", "não autorizada"),
+        ("ATTACH DATABASE 'x.db' AS x", "só SELECT"),
+        ("WITH x AS (SELECT 1) INSERT INTO changes SELECT * FROM changes", "insert"),
+        ("SELECT * FROM sqlite_master", "não autorizada"),
+        ("SELECT load_extension('evil')", "load_extension"),
+        ("SELECT nada FROM events", "SQL inválido"),
+        (
+            "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) "
+            "SELECT COUNT(*) FROM r",
+            "tempo esgotado",
+        ),
+    ],
+)
+def test_run_sql_refuses_anything_but_a_bounded_read(query, fragment, ctx_of):
+    ctx = ctx_of("s01")
+    ctx.settings = ctx.settings.model_copy(update={"sql_timeout_s": 0.5})
+    finding = ctx.run("run_sql", {"query": query})
+    assert fragment in finding.result["error"]
+    count = ctx.con.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    assert count == 90 * 720  # nada mudou e a conexão segue utilizável
+
+
+def test_run_sql_text_is_cleaned(ctx_of):
+    result = ctx_of("s01").run("run_sql", {"query": "SELECT 'a' || char(27) || '[31mb'"}).result
+    assert result["rows"] == [["a [31mb"]]
+
+
+# --- find_similar_incidents (etapa 6) ---------------------------------------------------------
+
+
+def test_find_similar_incidents_without_memory(ctx_of):
+    result = (
+        ctx_of("s01")
+        .run("find_similar_incidents", {"metric": "conversion_rate", "direction": "drop"})
+        .result
+    )
+    assert result == {"count": 0, "incidents": [], "available": False}
+
+
+def test_find_similar_incidents_uses_the_memory(ctx_of):
+    from sentinel.llm.embeddings import FakeEmbedder
+    from sentinel.memory import Incident, InMemoryIncidentStore
+
+    store = InMemoryIncidentStore(FakeEmbedder())
+    store.add(
+        Incident(
+            incident_id="i1",
+            metric="conversion_rate",
+            direction="drop",
+            status="identified",
+            causes=[{"platform": "android", "app_version": "3.2"}],
+            summary="queda no android 3.2",
+            state="approved",
+        )
+    )
+    ctx = ctx_of("s01")
+    ctx.memory = store
+    ctx.settings = ctx.settings.model_copy(update={"memory_min_similarity": 0.1})
+    result = ctx.run(
+        "find_similar_incidents",
+        {
+            "metric": "conversion_rate",
+            "direction": "drop",
+            "dimensions": {"platform": "android", "app_version": "3.2"},
+        },
+    ).result
+    assert result["count"] == 1
+    assert result["incidents"][0]["incident_id"] == "i1"
+    assert result["incidents"][0]["state"] == "approved"
+    assert "summary" not in result["incidents"][0]

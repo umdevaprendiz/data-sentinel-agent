@@ -9,12 +9,13 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from sentinel.data.profile import DEFAULT_PROFILE, SchemaProfile
 from sentinel.schemas import Finding
 from sentinel.security import clean_text
 
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 _TOKEN = re.compile(r"^(f\d{3,})\.([A-Za-z_]\w*|\d+)(\.([A-Za-z_]\w*|\d+))*$")
-METRICS = ("sessions", "conversions", "conversion_rate", "avg_ticket", "revenue")
+METRICS = DEFAULT_PROFILE.metrics  # perfil do gerador; com outro perfil, passe `profile`
 MAX_LIST_ITEMS = 3  # no prompt, listas longas mostram só os primeiros itens
 
 
@@ -47,15 +48,19 @@ def _lookup(node: Any, parts: list[str], token: str) -> Any:
     return node
 
 
-def _metric_of(parts: list[str], result: Mapping[str, Any]) -> str | None:
+def _metric_of(
+    parts: list[str], result: Mapping[str, Any], metrics: tuple[str, ...] = METRICS
+) -> str | None:
     for part in parts:
-        if part in METRICS:
+        if part in metrics:
             return part
     metric = result.get("metric")
-    return metric if metric in METRICS else None
+    return metric if metric in metrics else None
 
 
-def resolve(token: str, findings: Mapping[str, Finding]) -> str:
+def resolve(
+    token: str, findings: Mapping[str, Finding], profile: SchemaProfile | None = None
+) -> str:
     """Valor formatado de um placeholder. Levanta `PlaceholderError` se não existir."""
     if not _TOKEN.match(token):
         raise PlaceholderError(f"{{{token}}}: placeholder malformado")
@@ -63,6 +68,7 @@ def resolve(token: str, findings: Mapping[str, Finding]) -> str:
     finding = findings.get(finding_id)
     if finding is None:
         raise PlaceholderError(f"{{{token}}}: Finding {finding_id} não existe")
+    profile = profile or DEFAULT_PROFILE
     parts = path.split(".")
     if parts[0] == "params":
         root: Any = finding.params
@@ -70,17 +76,17 @@ def resolve(token: str, findings: Mapping[str, Finding]) -> str:
         metric = finding.params.get("metric")
     else:
         root = finding.result
-        metric = _metric_of(parts, finding.result)
+        metric = _metric_of(parts, finding.result, profile.metrics)
     value = _lookup(root, parts, token)
     if value is None or isinstance(value, Mapping | list):
         raise PlaceholderError(f"{{{token}}}: não é um valor simples")
-    return format_value(parts[-1] if parts else "", value, metric)
+    return format_value(parts[-1] if parts else "", value, metric, profile.rates)
 
 
-def fill(text: str, findings: Iterable[Finding]) -> str:
+def fill(text: str, findings: Iterable[Finding], profile: SchemaProfile | None = None) -> str:
     """Troca cada placeholder pelo valor do `Finding`."""
     by_id = {f.id: f for f in findings}
-    return PLACEHOLDER.sub(lambda m: resolve(m.group(1), by_id), text)
+    return PLACEHOLDER.sub(lambda m: resolve(m.group(1), by_id, profile), text)
 
 
 # --- Formatação (pt-BR) ---------------------------------------------------------------------
@@ -91,7 +97,11 @@ def _decimal(value: float, digits: int, sign: bool = False) -> str:
     return text.replace(",", "\0").replace(".", ",").replace("\0", ".")
 
 
-def format_value(name: str, value: Any, metric: str | None = None) -> str:
+def format_value(
+    name: str, value: Any, metric: str | None = None, rates: tuple[str, ...] | None = None
+) -> str:
+    """Formata em pt-BR pelo nome do campo; taxas (`rates`) viram porcentagem."""
+    rates = DEFAULT_PROFILE.rates if rates is None else rates
     if isinstance(value, bool):
         return "sim" if value else "não"
     if isinstance(value, str):
@@ -104,9 +114,9 @@ def format_value(name: str, value: Any, metric: str | None = None) -> str:
         return _decimal(value * 100, 0) + "%"
     if name == "z":
         return _decimal(value, 1)
-    if metric == "conversion_rate" and name in ("observed", "expected"):
+    if metric in rates and name in ("observed", "expected"):
         return _decimal(value * 100, 2) + "%"
-    if metric == "conversion_rate" and name == "change":
+    if metric in rates and name == "change":
         return _decimal(value * 100, 2, sign=True) + " p.p."
     if abs(value) >= 100:
         return _decimal(value, 0)
@@ -118,21 +128,23 @@ def format_value(name: str, value: Any, metric: str | None = None) -> str:
 # --- Resumo para o prompt -------------------------------------------------------------------
 
 
-def _walk(node: Any, path: str, metric: str | None, out: dict[str, str]) -> None:
+def _walk(
+    node: Any, path: str, metric: str | None, out: dict[str, str], profile: SchemaProfile
+) -> None:
     if isinstance(node, Mapping):
         for key, child in node.items():
-            _walk(
-                child, f"{path}.{key}" if path else str(key), key if key in METRICS else metric, out
-            )
+            child_metric = key if key in profile.metrics else metric
+            _walk(child, f"{path}.{key}" if path else str(key), child_metric, out, profile)
     elif isinstance(node, list):
         for index, child in enumerate(node[:MAX_LIST_ITEMS]):
-            _walk(child, f"{path}.{index}", metric, out)
+            _walk(child, f"{path}.{index}", metric, out, profile)
     elif node is not None:
-        out[path] = format_value(path.rsplit(".", 1)[-1], node, metric)
+        out[path] = format_value(path.rsplit(".", 1)[-1], node, metric, profile.rates)
 
 
-def flatten(finding: Finding) -> dict[str, str]:
+def flatten(finding: Finding, profile: SchemaProfile | None = None) -> dict[str, str]:
     """Caminho → valor formatado de cada campo que um placeholder pode citar."""
+    profile = profile or DEFAULT_PROFILE
     out: dict[str, str] = {}
-    _walk(finding.result, "", _metric_of([], finding.result), out)
+    _walk(finding.result, "", _metric_of([], finding.result, profile.metrics), out, profile)
     return out
